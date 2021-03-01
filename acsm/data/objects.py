@@ -22,8 +22,7 @@ from . import base2 as base_data
 curr_path = osp.dirname(osp.abspath(__file__))
 cache_path = osp.join(curr_path, '..', 'cachedir')
 
-if 'vl-fb' in socket.getfqdn():
-    base_dir = '/home/nileshk/data/DeformParts/'
+base_dir = '/BS/eldar-3d2/work/src2/data'
 
 flags.DEFINE_string(
     'imgnet_dir', osp.join(base_dir, 'Imagenet/ImageSets'),
@@ -44,7 +43,7 @@ flags.DEFINE_string(
 )
 
 flags.DEFINE_string(
-    'p3d_dir', osp.join(base_dir, 'PASCAL3D/PASCAL3D+_release1.1'),
+    'p3d_dir', osp.join(base_dir, 'PASCAL3D+_release1.1'),
     'PASCAL Data Directory'
 )
 flags.DEFINE_string(
@@ -249,8 +248,9 @@ class P3dDataset(base_data.BaseKpCamDataset):
     ''' 
     P3d Data loader
     '''
-    def __init__(self, opts, filter_key=None):
+    def __init__(self, opts, filter_key=None, pascal_only=False):
         super(P3dDataset, self).__init__(opts, filter_key=filter_key)
+        self._out_kp = False
         self.img_dir = osp.join(opts.p3d_dir, 'Images')
         self.kp_path = osp.join(
             opts.p3d_anno_path, 'data', '{}_kps.mat'.format(opts.category)
@@ -275,7 +275,9 @@ class P3dDataset(base_data.BaseKpCamDataset):
         self.kp_perm = sio.loadmat(
             self.kp_path, struct_as_record=False, squeeze_me=True
         )['kp_perm_inds'] - 1
-
+        
+        # self.kp_names = ['left_back_trunk', 'right_back_wheel', 'right_front_light', 'right_front_wheel', 'right_back_trunk', 'left_back_wheel', 'left_front_light', 'left_front_wheel', 'upper_left_rearwindow', 'upper_right_windshield', 'upper_right_rearwindow', 'upper_left_windshield']
+        self.kp_names = []
         opts.num_kps = len(self.kp_perm)
         self.num_imgs = len(self.anno)
 

@@ -12,7 +12,7 @@ from ..utils import cub_parse
 
 def load_template_shapes(opts, device_mapping=0):
 
-    if opts.category == 'bird':
+    if opts.category in ['bird', 'car']:
         model_dir = osp.join(opts.pascal_anno_path, '../models/', opts.category)
         mpath = osp.join(model_dir, 'mean_shape.mat')
     elif opts.category in ['horse', 'sheep', 'cow']:

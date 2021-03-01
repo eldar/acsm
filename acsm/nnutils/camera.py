@@ -278,13 +278,16 @@ class MultiCamPredictor(nn.Module):
             self.camera_predictor[cx].init_quat_module()
 
         ## Multiple transform predictors.
-        self.transform_predictors = nn.ModuleList(
-            [
-                TransformPredictor(
-                    nz_feat=nz_feat, no_trans=no_trans, part_init=part_init
-                ) for i in range(num_cams)
-            ]
-        )
+        if part_init is None:
+            self.transform_predictors = None
+        else:
+            self.transform_predictors = nn.ModuleList(
+                [
+                    TransformPredictor(
+                        nz_feat=nz_feat, no_trans=no_trans, part_init=part_init
+                    ) for i in range(num_cams)
+                ]
+            )
 
         base_rotation = torch.FloatTensor([0.9239, 0, 0.3827, 0]
                                           ).unsqueeze(0).unsqueeze(0)  ##pi/4
@@ -323,13 +326,15 @@ class MultiCamPredictor(nn.Module):
              camera_probs.unsqueeze(-1)], dim=2
         )
 
-        part_transforms = []
+        if self.transform_predictors is None:
+            part_transforms = None
+        else:
+            part_transforms = []
+            for cx in range(self.num_cams):
+                part_transform = self.transform_predictors[cx].forward(feat)
+                part_transforms.append(part_transform)
+            part_transforms = torch.stack(part_transforms, dim=1)
 
-        for cx in range(self.num_cams):
-            part_transform = self.transform_predictors[cx].forward(feat)
-            part_transforms.append(part_transform)
-
-        part_transforms = torch.stack(part_transforms, dim=1)
         return cam, part_transforms
 
 

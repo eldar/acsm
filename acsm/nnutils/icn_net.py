@@ -37,6 +37,7 @@ flags.DEFINE_boolean('pred_mask', True, 'Learn to predict segmentation mask')
 flags.DEFINE_boolean(
     'resnet_style_decoder', False, 'Use resnet style decoder for uvs'
 )
+flags.DEFINE_boolean('use_keypoints', True, 'Use keypoints')
 
 flags.DEFINE_integer('resnet_blocks', 3, 'Encodes using resnet to layer')
 flags.DEFINE_integer(
@@ -126,12 +127,15 @@ class ICPNet(nn.Module):
         self.uv_pred_dim = 3
 
         self.uv_sampler = init_stuff['uv_sampler']
-        part_init = {
-            'active_parts': init_stuff['active_parts'],
-            'part_axis': init_stuff['part_axis']
-        }
+        if opts.never_deform:
+            part_init = None
+        else:
+            part_init = {
+                'active_parts': init_stuff['active_parts'],
+                'part_axis': init_stuff['part_axis']
+            }
+            self.part_perm = init_stuff['part_perm']
         self.kp_perm = init_stuff['kp_perm']
-        self.part_perm = init_stuff['part_perm']
         if opts.resnet_style_decoder:
             self.unet_gen = resunet.ResNetConcatGenerator(
                 input_nc=3,
@@ -180,9 +184,12 @@ class ICPNet(nn.Module):
         self.uv2points = uv_to_3d.UVTo3D(self.mean_shape)
         self.cam_location = init_stuff['cam_location']
         self.offset_z = init_stuff['offset_z']
-        self.kp_vertex_ids = init_stuff['kp_vertex_ids']
+        if self.opts.use_keypoints:
+            self.kp_vertex_ids = init_stuff['kp_vertex_ids']
 
-        self.part_membership = PartMembership(init_stuff['alpha'])
+        if not self.opts.never_deform:
+            self.part_membership = PartMembership(init_stuff['alpha'])
+
         img_size = (int(opts.img_size * 1.0), int(opts.img_size * 1.0))
         self.grid = misc_utils.get_img_grid(img_size).repeat(1, 1, 1, 1)
         return
@@ -254,14 +261,21 @@ class ICPNet(nn.Module):
 
         kp_perm = self.kp_perm.to(inputs['img'].get_device())
 
-        new_kp = inputs['kp'].clone()
-        new_kp[:, :, 0] = -1 * new_kp[:, :, 0]
-        new_kp = new_kp[:, kp_perm, :]
+        if inputs['kp'] is not None:
+            new_kp = inputs['kp'].clone()
+            new_kp[:, :, 0] = -1 * new_kp[:, :, 0]
+            new_kp = new_kp[:, kp_perm, :]
 
-        inputs['kp'] = torch.cat([inputs['kp'], new_kp])
+            inputs['kp'] = torch.cat([inputs['kp'], new_kp])
+        else:
+            inputs['kp'] = None
 
-        new_kp_valid = inputs['kp_valid'].clone()
-        inputs['kp_valid'] = torch.cat([inputs['kp_valid'], new_kp_valid])
+        if inputs['kp_valid'] is not None:
+            new_kp_valid = inputs['kp_valid'].clone()
+            inputs['kp_valid'] = torch.cat([inputs['kp_valid'], new_kp_valid])
+        else:
+            inputs['kp_valid'] = None
+
         inputs['inds'] = torch.cat([inputs['inds'], inputs['inds'] + 10000])
 
         inputs['contour'] = torch.cat(
@@ -283,8 +297,8 @@ class ICPNet(nn.Module):
                     [codes_pred[key][:true_size], codes_pred[key][:true_size]]
                 )
 
-        part_perm = self.part_perm.to(device)
-        if opts.multiple_cam:
+        if opts.multiple_cam and not opts.never_deform:
+            part_perm = self.part_perm.to(device)
             keys_to_copy = ['part_transforms']
             for key in keys_to_copy:
                 mirror_transforms_swaps = codes_pred[key][:true_size
@@ -327,21 +341,29 @@ class ICPNet(nn.Module):
 
         if opts.num_hypo_cams == 1:
             camera = camera.unsqueeze(1)
-            part_transforms = part_transforms.unsqueeze(1)
+            if deform:
+                part_transforms = part_transforms.unsqueeze(1)
+            else:
+                part_transforms = None
             # delta_quat_transforms = delta_quat_transforms.unsqueeze(1)
             cam_probs = camera[:, :, 0:1] * 0 + 1
         elif opts.multiple_cam:
             camera, cam_probs = camera[:, :, :7], camera[:, :, 7:]
 
-        membership = self.part_membership.forward().unsqueeze(0).repeat(
-            len(uv_map), 1, 1
-        )
-        self.membership = membership.to(device_id)
+        if self.opts.never_deform:
+            self.membership = None
+            predictions['membership'] = None
+        else:
+            membership = self.part_membership.forward().unsqueeze(0).repeat(
+                len(uv_map), 1, 1
+            )
+            self.membership = membership.to(device_id)
+            predictions['membership'] = membership.to(device_id)
+        
         predictions['cam'] = camera
         predictions['cam_probs'] = cam_probs
         predictions['part_transforms'] = part_transforms
         predictions['uv_map'] = uv_map
-        predictions['membership'] = membership.to(device_id)
         predictions['iter'] = 100000
         predictions = self.post_process_predictions(predictions, deform=deform)
         return predictions
@@ -375,9 +397,13 @@ class ICPNet(nn.Module):
         if opts.flip_train:
             inputs['flip_contour'] = flip_contour
             inputs = self.flip_inputs(inputs)
-
-        inputs['kp_vis'] = inputs['kp'][..., 2] > 0
-        inputs['kps_vis'] = inputs['kp_vis'] * inputs['kp_valid']
+        
+        if inputs['kp'] is not None:
+            inputs['kp_vis'] = inputs['kp'][..., 2] > 0
+            inputs['kps_vis'] = inputs['kp_vis'] * inputs['kp_valid']
+        else:
+            inputs['kp_vis'] = None
+            inputs['kps_vis'] = None
 
         self.inputs = inputs
         img = inputs['img']
@@ -436,12 +462,15 @@ class ICPNet(nn.Module):
         project_points_cam_z = project_points_cam_z.view(shape)
         shape = (bsize, img_size[0], img_size[1], 2)
         project_points = project_points_cam_pred[..., 0:2].view(shape)
-        kp_verts = verts[:, self.kp_vertex_ids, :]
-        kp_project = geom_utils.project_3d_to_image(
-            kp_verts, camera, self.offset_z
-        )
-        kp_project = kp_project[...,
-                                0:2].view(bsize, len(self.kp_vertex_ids), -1)
+        if self.opts.use_keypoints:
+            kp_verts = verts[:, self.kp_vertex_ids, :]
+            kp_project = geom_utils.project_3d_to_image(
+                kp_verts, camera, self.offset_z
+            )
+            kp_project = kp_project[...,
+                                    0:2].view(bsize, len(self.kp_vertex_ids), -1)
+        else:
+            kp_project = None
         verts_proj = geom_utils.project_3d_to_image(
             verts, camera, self.offset_z
         )[..., 0:2]
@@ -495,10 +524,13 @@ class ICPNet(nn.Module):
 
         self.membership = predictions['membership']
         for key in geom_preds[0].keys():
-            predictions[key] = torch.stack(
-                [geom_preds[cx][key] for cx in range(opts.num_hypo_cams)],
-                dim=1
-            )
+            if not self.opts.use_keypoints and key == 'kp_project':
+                predictions[key] = None
+            else:
+                predictions[key] = torch.stack(
+                    [geom_preds[cx][key] for cx in range(opts.num_hypo_cams)],
+                    dim=1
+                )
 
         if opts.warmup_pose_iter > real_iter:
             predictions['cam_probs'] = (1.0 / opts.num_hypo_cams) * (
@@ -612,7 +644,8 @@ class ICPNet(nn.Module):
 
         losses = {}
         losses['cyc'] = reproject_loss * weight_dict['cyc']
-        losses['kp'] = kp_loss * weight_dict['kp']
+        if kps_gt is not None:
+            losses['kp'] = kp_loss * weight_dict['kp']
         losses['vis'] = depth_loss * weight_dict['vis']
         losses['cov'] = mask_cov_err * weight_dict['cov']
         losses['con'] = mask_con_err * weight_dict['con']
@@ -624,13 +657,17 @@ class ICPNet(nn.Module):
         probs = predictions['cam_probs'].squeeze(2)
         losses = {}
         for hx in range(opts.num_hypo_cams):
+            if predictions['kp_project'] is not None:
+                kp_project = predictions['kp_project'][:, hx]
+            else:
+                kp_project = None
             loss_hx = self._compute_geometrics_losses(
                 reprojected_points=predictions['project_points'][:, hx],
                 reprojected_verts=predictions['verts_proj'][:, hx],
                 reprojected_points_z=predictions['project_points_cam_z'][:, hx],
                 rendered_depth=predictions['depth'][:, hx],
                 rendered_mask=predictions['mask_render'][:, hx],
-                kps_projected=predictions['kp_project'][:, hx],
+                kps_projected=kp_project,
                 contours=inputs['contour'],
                 mask_dt=inputs['mask_df'],
                 mask=inputs['mask'],
@@ -666,9 +703,10 @@ class ICPNet(nn.Module):
         )
         losses['seg'] = seg_mask_loss * weight_dict['seg']
 
-        regularize_trans = (predictions['part_transforms'][..., 1:4])**2
-        regularize_trans = regularize_trans.sum(-1)  # 3
-        regularize_trans = regularize_trans.sum(-1)  # nparts
-        regularize_trans = regularize_trans.mean()
-        losses['trans_reg'] = regularize_trans * weight_dict['trans_reg']
+        if predictions['part_transforms'] is not None:
+            regularize_trans = (predictions['part_transforms'][..., 1:4])**2
+            regularize_trans = regularize_trans.sum(-1)  # 3
+            regularize_trans = regularize_trans.sum(-1)  # nparts
+            regularize_trans = regularize_trans.mean()
+            losses['trans_reg'] = regularize_trans * weight_dict['trans_reg']
         return losses

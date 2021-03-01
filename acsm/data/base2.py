@@ -357,9 +357,10 @@ class BaseDataset(Dataset):
             'mask': mask.astype(np.float32),
             'inds': index,
             'mask_df': mask_df.astype(np.float32),
-            'contour': contour.astype(np.float32),
-            'kp': kp.astype(np.float32)
+            'contour': contour.astype(np.float32)
         }
+        if kp is not None:
+            elem['kp'] = kp.astype(np.float32)
 
         if self.opts.flip_train:
             flip_img = img[:, :, ::-1].copy()

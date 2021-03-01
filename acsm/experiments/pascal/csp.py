@@ -3,6 +3,8 @@ from __future__ import absolute_import, division, print_function
 nice -n 20 python -m icn.experiments.cub.csp --n_data_workers=8 --batch_size=8 --reproject_loss_wt=1 --display_visuals --display_freq=20 --plot_scalars=True --name=birds_gt_camera_thresh0pt25_pred_uv2_3d --num_epochs=500 --debug_tb=True --save_visuals --save_visual_freq=2000 --use_html=True --save_epoch_freq=20 --use_normalized_uv=True --cycle_loss_wt=10.0 --cam_compute_ls=False --cycle_mask_loss_wt=10.0 --cycle_mask_min=0.25 --cmr_mean_shape=True --pred_xy_cycle=True --uv_to_3d_pred=True
 '''
 
+import startup
+
 import matplotlib
 matplotlib.use('Agg')
 import multiprocessing
@@ -22,14 +24,14 @@ import torchvision
 import copy
 from absl import app, flags
 from torch.autograd import Variable
-from ...utils import mesh
-from ...utils import metrics
-from ...data import objects as objects_data
-from ...nnutils import loss_utils
-from ...nnutils import geom_utils, icn_net, train_utils, model_utils
-from ...nnutils.nmr import NeuralRenderer
-from ...nnutils import uv_to_3d
-from ...utils import (
+import acsm.utils.mesh
+from acsm.utils import metrics
+from acsm.data import objects as objects_data
+from acsm.nnutils import loss_utils
+from acsm.nnutils import geom_utils, icn_net, train_utils, model_utils
+from acsm.nnutils.nmr import NeuralRenderer
+from acsm.nnutils import uv_to_3d
+from acsm.utils import (
     bird_vis, cub_parse, mesh, render_utils, transformations, visdom_render,
     visutil, image
 )
@@ -52,6 +54,7 @@ flags.DEFINE_integer('ft_pretrain_epochs', -1, 'cub or globe or pascal')
 flags.DEFINE_float('split_size', 1.0, 'Split size of the train set')
 flags.DEFINE_integer('seed', 0, 'seed for randomness')
 flags.DEFINE_boolean('semi_supv', False, 'Train in a semi supv setting,')
+flags.DEFINE_boolean('never_deform', False, 'whether to use part deformations,')
 
 cm = plt.get_cmap('jet')
 
@@ -62,18 +65,28 @@ class CSPTrainer(train_utils.Trainer):
         self.img_size = opts.img_size
         self.offset_z = 5.0
 
-        init_stuff = {
-            'alpha': self.mean_shape['alpha'],
-            'active_parts': self.part_active_state,
-            'part_axis': self.part_axis_init,
-            'kp_perm': self.kp_perm,
-            'part_perm': self.part_perm,
-            'mean_shape': self.mean_shape,
-            'cam_location': self.cam_location,
-            'offset_z': self.offset_z,
-            'kp_vertex_ids': self.kp_vertex_ids,
-            'uv_sampler': self.uv_sampler,
-        }
+        if opts.never_deform:
+            init_stuff = {
+                'mean_shape': self.mean_shape,
+                'cam_location': self.cam_location,
+                'offset_z': self.offset_z,
+                'uv_sampler': self.uv_sampler,
+                'kp_perm': self.kp_perm,
+            }
+        else:
+            init_stuff = {
+                'alpha': self.mean_shape['alpha'],
+                'active_parts': self.part_active_state,
+                'part_axis': self.part_axis_init,
+                'kp_perm': self.kp_perm,
+                'part_perm': self.part_perm,
+                'mean_shape': self.mean_shape,
+                'cam_location': self.cam_location,
+                'offset_z': self.offset_z,
+                'kp_vertex_ids': self.kp_vertex_ids,
+                'uv_sampler': self.uv_sampler,
+            }
+
         model = icn_net.ICPNet(opts, init_stuff)
         self.gpu_count = 1
         if torch.cuda.device_count() > 1:
@@ -140,9 +153,6 @@ class CSPTrainer(train_utils.Trainer):
             model_obj_dir, 'mean_{}.obj'.format(opts.pascal_class)
         )
 
-        nkps = len(self.kp_vertex_ids)
-        self.keypoint_cmap = [cm(i * 255 // nkps) for i in range(nkps)]
-
         faces_np = self.mean_shape['faces'].data.cpu().numpy()
         verts_np = self.mean_shape['sphere_verts'].data.cpu().numpy()
         uv_sampler = mesh.compute_uvsampler(
@@ -153,7 +163,19 @@ class CSPTrainer(train_utils.Trainer):
             -1, len(faces_np), opts.tex_size * opts.tex_size, 2
         )
 
+        self.sphere_uv_img = scipy.misc.imread(
+            osp.join(opts.cachedir, 'color_maps', 'sphere.png')
+        )
+        self.sphere_uv_img = torch.FloatTensor(self.sphere_uv_img) / 255
+        self.sphere_uv_img = self.sphere_uv_img.permute(2, 0, 1)
+
         self.verts_obj = self.mean_shape['verts']
+
+        if self.opts.never_deform:
+            nkps = 0
+        else:
+            nkps = len(self.kp_vertex_ids)
+        self.keypoint_cmap = [cm(i * 255 // nkps) for i in range(nkps)]
 
         vis_rend = bird_vis.VisRenderer(opts.img_size, faces_np)
         self.renderer = visdom_render.RendererWrapper(
@@ -172,13 +194,6 @@ class CSPTrainer(train_utils.Trainer):
         renderer_no_light.vis_rend.set_bgcolor((255, 255, 255))
         self.renderer_no_light = renderer_no_light
 
-        self.sphere_uv_img = scipy.misc.imread(
-            osp.join(opts.cachedir, 'color_maps', 'sphere.png')
-        )
-        self.sphere_uv_img = torch.FloatTensor(self.sphere_uv_img) / 255
-        self.sphere_uv_img = self.sphere_uv_img.permute(2, 0, 1)
-        return
-
     def init_dataset(self, ):
         opts = self.opts
         if opts.category == 'bird':
@@ -189,6 +204,13 @@ class CSPTrainer(train_utils.Trainer):
                 opts, pascal_only=True
             )
             self.all_dataloader = objects_data.imnet_pascal_quad_data_loader(
+                opts,
+            )
+        elif opts.category == 'car':
+            self.pascal_dataloader = objects_data.p3d_data_loader(
+                opts,
+            )
+            self.all_dataloader = objects_data.p3d_data_loader(
                 opts,
             )
         else:
@@ -217,14 +239,15 @@ class CSPTrainer(train_utils.Trainer):
         model_dir, self.mean_shape, self.mean_shape_np = model_utils.load_template_shapes(
             opts, device_mapping=self.device
         )
-        dpm, parts_data, self.kp_vertex_ids = model_utils.init_dpm(
-            self.dataloader.dataset.kp_names, model_dir, self.mean_shape,
-            opts.parts_file
-        )
-        opts.nparts = self.mean_shape['alpha'].shape[1]
-        self.part_active_state, self.part_axis_init, self.part_perm = model_utils.load_active_parts(
-            model_dir, self.save_dir, dpm, parts_data, suffix=''
-        )
+        if not opts.never_deform:
+            dpm, parts_data, self.kp_vertex_ids = model_utils.init_dpm(
+                self.dataloader.dataset.kp_names, model_dir, self.mean_shape,
+                opts.parts_file
+            )
+            opts.nparts = self.mean_shape['alpha'].shape[1]
+            self.part_active_state, self.part_axis_init, self.part_perm = model_utils.load_active_parts(
+                model_dir, self.save_dir, dpm, parts_data, suffix=''
+            )
         return
 
     def init_parts_point_of_rotation(self, verts, parts):
@@ -253,8 +276,12 @@ class CSPTrainer(train_utils.Trainer):
         img_size = self.input_img_tensor.shape[-1]
         self.codes_gt = {}
         self.codes_gt['inds'] = torch.LongTensor(self.inds).to(self.device)
-        self.codes_gt['kp'] = batch['kp'].type(self.Tensor).to(self.device)
-        self.codes_gt['kp_valid'] = batch['kp'][:, :, 2].to(self.device) > 0.5
+        if 'kp' in batch:
+            self.codes_gt['kp'] = batch['kp'].type(self.Tensor).to(self.device)
+            self.codes_gt['kp_valid'] = batch['kp'][:, :, 2].to(self.device) > 0.5
+        else:
+            self.codes_gt['kp'] = None
+            self.codes_gt['kp_valid'] = None
 
         self.codes_gt['contour'] = (batch['contour']).float().to(self.device)
         self.codes_gt['contour'
@@ -267,11 +294,16 @@ class CSPTrainer(train_utils.Trainer):
                 self.codes_gt['flip_contour'] / img_size - 0.5
             ) * 2
 
-        kps_vis = self.codes_gt['kp'][..., 2] > 0
-        kps_ind = (self.codes_gt['kp'] * 0.5 + 0.5) * img_size
-        self.codes_gt['kps_vis'] = kps_vis
-        self.codes_gt['kps_ind'] = kps_ind
-        self.codes_gt['kps_vis'] = kps_vis * self.codes_gt['kp_valid']
+        if 'kp' in batch:
+            kps_vis = self.codes_gt['kp'][..., 2] > 0
+            kps_ind = (self.codes_gt['kp'] * 0.5 + 0.5) * img_size
+            self.codes_gt['kps_vis'] = kps_vis
+            self.codes_gt['kps_ind'] = kps_ind
+            self.codes_gt['kps_vis'] = kps_vis * self.codes_gt['kp_valid']
+        else:
+            self.codes_gt['kps_vis'] = None
+            self.codes_gt['kps_ind'] = None
+
         return
 
     def define_criterion(self):
@@ -296,7 +328,11 @@ class CSPTrainer(train_utils.Trainer):
         else:
             feed_dict['flip_contour'] = None
 
-        deform = self.real_iter > opts.warmup_deform_iter
+        if opts.never_deform:
+            deform = False
+        else:
+            deform = self.real_iter > opts.warmup_deform_iter
+ 
         predictions, inputs = self.model.forward(
             img=feed_dict['img'],
             mask=feed_dict['mask'],
@@ -341,7 +377,10 @@ class CSPTrainer(train_utils.Trainer):
 
         for key in inputs.keys():
             codes_gt[key] = inputs[key]
-        codes_gt['kps_ind'] = (codes_gt['kp'] * 0.5 + 0.5) * self.img_size
+        if codes_gt['kp'] is not None:
+            codes_gt['kps_ind'] = (codes_gt['kp'] * 0.5 + 0.5) * self.img_size
+        else:
+            codes_gt['kps_ind'] = None
 
         self.loss_factors = losses
 
@@ -442,15 +481,16 @@ class CSPTrainer(train_utils.Trainer):
             visuals['z_img'] = visutil.tensor2im(
                 visutil.undo_resnet_preprocess(img.data[b, None, :, :, :])
             )
-            visuals['img_kp'] = bird_vis.draw_keypoint_on_image(
-                visuals['z_img'], self.codes_gt['kps_ind'][b],
-                self.codes_gt['kps_vis'][b], self.keypoint_cmap
-            )
-            visuals['img_kp_rp'] = bird_vis.draw_keypoint_on_image(
-                visuals['z_img'],
-                self.codes_pred['kp_project'][b][0] * 128 + 128,
-                self.codes_gt['kps_vis'][b], self.keypoint_cmap
-            )
+            if opts.use_keypoints:
+                visuals['img_kp'] = bird_vis.draw_keypoint_on_image(
+                    visuals['z_img'], self.codes_gt['kps_ind'][b],
+                    self.codes_gt['kps_vis'][b], self.keypoint_cmap
+                )
+                visuals['img_kp_rp'] = bird_vis.draw_keypoint_on_image(
+                    visuals['z_img'],
+                    self.codes_pred['kp_project'][b][0] * 128 + 128,
+                    self.codes_gt['kps_vis'][b], self.keypoint_cmap
+                )
 
             visuals['z_mask'] = visutil.tensor2im(
                 mask.data.repeat(1, 3, 1, 1)[b, None, :, :, :]

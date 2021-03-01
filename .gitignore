@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+acsm/cachedir/
+acsm/external/sources

@@ -1,0 +1,24 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "acsm bird 0 parts",
+            "type": "python",
+            "request": "launch",
+            "program": "acsm/experiments/pascal/csp.py",
+            "console": "integratedTerminal",
+            "args": ["--name=acsm_bird_0parts_kp_False_eldar_1", "--batch_size=1", "--n_data_workers=8", "--display_port=8098", "--display_visuals=True", "--display_freq=100", "--save_visuals", "--save_visual_freq=100", "--use_html", "--kp_loss_wt=0.0", "--save_epoch_freq=50", "--save_visual_count=1", "--single_axis_pred=True", "--dl_out_pascal=True", "--dl_out_imnet=True", "--num_epochs=400", "--warmup_pose_iter=500", "--warmup_deform_iter=10000", "--warmup_semi_supv=0", "--multiple_cam=True", "--flip_train=True", "--ent_loss_wt=0.05", "--scale_bias=0.75", "--num_hypo_cams=8", "--parts_file=acsm/part_files/bird_0.txt", "--reproject_loss_wt=1.0", "--mask_loss_wt=0.0", "--no_trans=False", "--cov_mask_loss_wt=10", "--con_mask_loss_wt=0.1", "--n_contour=1000", "--nmr_uv_loss_wt=0.0", "--resnet_style_decoder=True", "--resnet_blocks=4", "--depth_loss_wt=1.0", "--category=bird", "--el_euler_range=20", "--cyc_euler_range=20"]
+        },
+        {
+            "name": "acsm car 0 parts",
+            "type": "python",
+            "request": "launch",
+            "program": "acsm/experiments/pascal/csp.py",
+            "console": "integratedTerminal",
+            "args": ["--name=acsm_car_testing", "--batch_size=1", "--n_data_workers=8", "--display_port=8098", "--display_visuals=False", "--display_freq=100", "--save_visuals", "--save_visual_freq=100", "--use_html", "--kp_loss_wt=0.0", "--save_epoch_freq=50", "--save_visual_count=1", "--single_axis_pred=True", "--dl_out_pascal=True", "--dl_out_imnet=True", "--num_epochs=400", "--warmup_pose_iter=500", "--warmup_deform_iter=10000", "--warmup_semi_supv=0", "--multiple_cam=True", "--flip_train=True", "--ent_loss_wt=0.05", "--scale_bias=0.75", "--num_hypo_cams=8", "--parts_file=acsm/part_files/car_0.txt", "--reproject_loss_wt=1.0", "--mask_loss_wt=0.0", "--no_trans=False", "--cov_mask_loss_wt=10", "--con_mask_loss_wt=0.1", "--n_contour=1000", "--nmr_uv_loss_wt=0.0", "--resnet_style_decoder=True", "--resnet_blocks=4", "--depth_loss_wt=1.0", "--category=car", "--el_euler_range=20", "--cyc_euler_range=20", "--never_deform=True", "--use_keypoints=False"]
+        }
+    ]
+}

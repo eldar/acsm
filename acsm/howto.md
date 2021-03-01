@@ -1,0 +1,3 @@
+python acsm/benchmark/pascal/visualise_uv_maps.py --name=acsm_car --category=car --never_deform=True --use_keypoints=False --parts_file=acsm/part_files/car_0.txt --use_html --dl_out_pascal=True --dl_out_imnet=False --split=val --num_train_epoch=100 --num_hypo_cams=8 --env_name=acsm_car --multiple_cam=True  --visuals_freq=5 --visualize=True --n_data_workers=4 --scale_bias=1.5  --resnet_style_decoder=True --resnet_blocks=4 --el_euler_range=90 --cyc_euler_range=60
+
+# --el_euler_range=20 --cyc_euler_range=20
