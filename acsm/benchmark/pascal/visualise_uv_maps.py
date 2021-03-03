@@ -39,6 +39,8 @@ import torchvision
 import scipy.io as sio
 import cPickle as pkl
 import scipy.misc
+import imageio
+
 cm = plt.get_cmap('jet')
 # from matplotlib import set_cmap
 flags.DEFINE_boolean('visualize', False, 'if true visualizes things')
@@ -106,6 +108,8 @@ class KPTransferTester(test_utils.Tester):
         self.uv2points = uv_to_3d.UVTo3D(self.mean_shape)
 
         self.kp_names = self.dataloader.dataset.kp_names
+
+        self.iter_count = 0
 
     def init_render(self, ):
         opts = self.opts
@@ -176,6 +180,7 @@ class KPTransferTester(test_utils.Tester):
             )
 
     def set_input(self, batch):
+        
         input_imgs = batch['img'].type(self.Tensor)
         mask = batch['mask'].type(self.Tensor)
         for b in range(input_imgs.size(0)):
@@ -184,7 +189,11 @@ class KPTransferTester(test_utils.Tester):
         self.imgs = input_imgs.to(self.device)
         mask = (mask > 0.5).float()
         self.mask = mask.to(self.device)
-        self.codes_gt = {}
+        codes_gt = {}
+        codes_gt['img'] = self.imgs
+        codes_gt['inds'] = torch.LongTensor(self.inds).to(self.device)
+        self.codes_gt = codes_gt
+        
 
     def predict(self, ):
         opts = self.opts
@@ -208,16 +217,45 @@ class KPTransferTester(test_utils.Tester):
         self.codes_pred['camera_selected'] = camera
         self.codes_pred['verts_selected'] = verts
 
-    def visuals_to_save(self, total_steps):
+    def visuals_to_save(self, count=None):
         opts = self.opts
         batch_visuals = []
         mask = self.mask
-        img = self.imgs
-        results_dir = osp.join(
-            opts.result_dir, "{}".format(opts.split), "{}".format(total_steps)
-        )
-        if not osp.exists(results_dir):
-            os.makedirs(results_dir)
+        img = self.codes_gt['img']
+        inds = self.codes_gt['inds'].data.cpu().numpy()
+        uv_map = self.codes_pred['uv_map']
+
+        if count is None:
+            count = min(opts.save_visual_count, len(self.codes_gt['img']))
+        visual_ids = list(range(count))
+        for b in visual_ids:
+            visuals = {}
+            visuals['ind'] = "{:04}".format(inds[b])
+
+            visuals['z_img'] = visutil.tensor2im(
+                visutil.undo_resnet_preprocess(img.data[b, None, :, :, :])
+            )
+
+            img_ix = (
+                torch.FloatTensor(visuals['z_img']).permute(2, 0, 1)
+            ) / 255
+            visuals['a_overlay_uvmap'] = bird_vis.sample_UV_contour(
+                img_ix,
+                uv_map.float()[b].cpu(),
+                self.sphere_uv_img,
+                mask[b].float().cpu(),
+                real_img=True
+            )
+
+            visuals['a_overlay_uvmap'] = visutil.tensor2im(
+                [visuals['a_overlay_uvmap'].data]
+            )
+            print(visuals['a_overlay_uvmap'].shape)
+
+            uv_fn = os.path.join(opts.result_dir, "{}_uv.png".format(self.iter_count))
+            imageio.imwrite(uv_fn, visuals['a_overlay_uvmap'])
+            
+            self.iter_count += 1
 
         return batch_visuals
 
@@ -245,10 +283,11 @@ class KPTransferTester(test_utils.Tester):
                     print('{}/{} evaluation iterations.'.format(i, n_iter))
                 self.set_input(batch)
                 self.predict()
+                self.visuals_to_save(count=1)
 
 def main(_):
     # opts.n_data_workers = 0 opts.batch_size = 1 print = pprint.pprint
-    opts.batch_size = 8
+    opts.batch_size = 1
     opts.results_dir = osp.join(
         opts.results_dir_base, opts.name, '%s' % (opts.split),
         'epoch_%d' % opts.num_train_epoch

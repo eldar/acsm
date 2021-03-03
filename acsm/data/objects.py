@@ -22,7 +22,17 @@ from . import base2 as base_data
 curr_path = osp.dirname(osp.abspath(__file__))
 cache_path = osp.join(curr_path, '..', 'cachedir')
 
-base_dir = '/BS/eldar-3d2/work/src2/data'
+if "triton" in socket.gethostname():
+    base_dir = "/scratch/local/ssd/eldar/data"
+else:
+    base_dir = '/BS/eldar-3d2/work/src2/data'
+
+
+flags.DEFINE_string(
+    'cache_root', cache_path,
+    'Root cache dir'
+)
+
 
 flags.DEFINE_string(
     'imgnet_dir', osp.join(base_dir, 'Imagenet/ImageSets'),
