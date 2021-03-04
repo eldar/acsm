@@ -24,6 +24,8 @@ cache_path = osp.join(curr_path, '..', 'cachedir')
 
 if "triton" in socket.gethostname():
     base_dir = "/scratch/local/ssd/eldar/data"
+elif "mars" in socket.gethostname():
+    base_dir = "/home/eldar/work/data/datasets"
 else:
     base_dir = '/BS/eldar-3d2/work/src2/data'
 
