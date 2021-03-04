@@ -33,6 +33,7 @@ from absl import app
 from absl import flags
 import os
 import os.path as osp
+from tqdm import tqdm
 import numpy as np
 import torch
 import torchvision
@@ -54,7 +55,7 @@ opts = flags.FLAGS
 kp_eval_thresholds = [0.05, 0.1, 0.2]
 
 
-class KPTransferTester(test_utils.Tester):
+class UVMapTester(test_utils.Tester):
     def define_model(self, ):
 
         opts = self.opts
@@ -118,6 +119,11 @@ class KPTransferTester(test_utils.Tester):
         else:
             nkps = len(self.kp_vertex_ids)
         self.keypoint_cmap = [cm(i * 255 // nkps) for i in range(nkps)]
+        model_obj_dir = osp.join(self.save_dir, 'model')
+        visutil.mkdir(model_obj_dir)
+        self.model_obj_path = osp.join(
+            model_obj_dir, 'mean_{}.obj'.format(opts.pascal_class)
+        )
 
         faces_np = self.mean_shape['faces'].data.cpu().numpy()
         verts_np = self.mean_shape['sphere_verts'].data.cpu().numpy()
@@ -136,6 +142,31 @@ class KPTransferTester(test_utils.Tester):
         )
         self.sphere_uv_img = torch.FloatTensor(self.sphere_uv_img) / 255
         self.sphere_uv_img = self.sphere_uv_img.permute(2, 0, 1)
+
+        self.verts_obj = self.mean_shape['verts']
+
+        if self.opts.never_deform:
+            nkps = 0
+        else:
+            nkps = len(self.kp_vertex_ids)
+        self.keypoint_cmap = [cm(i * 255 // nkps) for i in range(nkps)]
+
+        vis_rend = bird_vis.VisRenderer(opts.img_size, faces_np)
+        self.renderer = visdom_render.RendererWrapper(
+            vis_rend, self.verts_obj, self.uv_sampler, self.offset_z,
+            self.mean_shape_np, self.model_obj_path, self.keypoint_cmap,
+            self.opts
+        )
+
+        vis_rend = bird_vis.VisRenderer(opts.img_size, faces_np)
+        renderer_no_light = visdom_render.RendererWrapper(
+            vis_rend, self.verts_obj, self.uv_sampler, self.offset_z,
+            self.mean_shape_np, self.model_obj_path, self.keypoint_cmap,
+            self.opts
+        )
+        renderer_no_light.vis_rend.set_light_status(False)
+        renderer_no_light.vis_rend.set_bgcolor((255, 255, 255))
+        self.renderer_no_light = renderer_no_light
 
     def init_dataset(self, ):
         opts = self.opts
@@ -187,11 +218,15 @@ class KPTransferTester(test_utils.Tester):
             input_imgs[b] = self.resnet_transform(input_imgs[b])
         self.inds = [k.item() for k in batch['inds']]
         self.imgs = input_imgs.to(self.device)
+        img_size = self.imgs.shape[-1]
         mask = (mask > 0.5).float()
         self.mask = mask.to(self.device)
         codes_gt = {}
         codes_gt['img'] = self.imgs
         codes_gt['inds'] = torch.LongTensor(self.inds).to(self.device)
+        codes_gt['mask'] = self.mask.unsqueeze(1)
+        codes_gt['contour'] = (batch['contour']).float().to(self.device)
+        codes_gt['contour'] = (codes_gt['contour'] / img_size - 0.5) * 2
         self.codes_gt = codes_gt
         
 
@@ -217,13 +252,14 @@ class KPTransferTester(test_utils.Tester):
         self.codes_pred['camera_selected'] = camera
         self.codes_pred['verts_selected'] = verts
 
-    def visuals_to_save(self, count=None):
+    def visuals_to_save(self, count=1):
+        renderer = self.renderer
         opts = self.opts
-        batch_visuals = []
-        mask = self.mask
+        mask = self.codes_gt['mask']
         img = self.codes_gt['img']
         inds = self.codes_gt['inds'].data.cpu().numpy()
         uv_map = self.codes_pred['uv_map']
+        camera = self.codes_pred['cam']
 
         if count is None:
             count = min(opts.save_visual_count, len(self.codes_gt['img']))
@@ -232,8 +268,54 @@ class KPTransferTester(test_utils.Tester):
             visuals = {}
             visuals['ind'] = "{:04}".format(inds[b])
 
+            if opts.render_mask and opts.multiple_cam:
+                mask_renders = self.codes_pred['mask_render'][
+                    b, :, None, ...].repeat(1, 3, 1, 1).data.cpu()
+                mask_renders = (mask_renders.numpy() *
+                                255).astype(np.uint8).transpose(0, 2, 3, 1)
+                visuals['mask_render'] = visutil.image_montage(
+                    mask_renders, nrow=min(3, opts.num_hypo_cams // 3 + 1)
+                )
+
+            if opts.render_depth and opts.multiple_cam:
+                all_depth_hypo = (
+                    self.codes_pred['mask_render'][b] *
+                    self.codes_pred['depth'][b]
+                )[:, None, :, :].repeat(1, 3, 1, 1).data.cpu() / 50.0
+                all_depth_hypo = (all_depth_hypo.numpy() *
+                                  255).astype(np.uint8).transpose(0, 2, 3, 1)
+                visuals['all_depth'] = visutil.image_montage(
+                    all_depth_hypo, nrow=min(3, opts.num_hypo_cams // 3 + 1)
+                )
+
+            if opts.multiple_cam:
+                vis_cam_hypotheses = renderer.render_all_hypotheses(
+                    camera[b],
+                    probs=self.codes_pred['cam_probs'][b],
+                    verts=self.codes_pred['verts'][b]
+                )
+                visuals.update(vis_cam_hypotheses)
+
             visuals['z_img'] = visutil.tensor2im(
                 visutil.undo_resnet_preprocess(img.data[b, None, :, :, :])
+            )
+
+            visuals['z_mask'] = visutil.tensor2im(
+                mask.data.repeat(1, 3, 1, 1)[b, None, :, :, :]
+            )
+            visuals['uv_x'], visuals['uv_y'] = render_utils.render_uvmap(
+                mask[b], uv_map[b].data.cpu()
+            )
+            # visuals['model'] = (self.render_model_using_cam(self.codes_pred['cam'][b])*255).astype(np.uint8)
+            visuals['texture_copy'] = bird_vis.copy_texture_from_img(
+                mask[b], img[b], self.codes_pred['project_points'][b][0]
+            )
+
+            contour_indx = (
+                opts.img_size * (self.codes_gt['contour'][b] * 0.5 + 0.5)
+            ).data.cpu().numpy().astype(np.int)
+            visuals['contour'] = renderer.visualize_contour_img(
+                contour_indx, opts.img_size
             )
 
             img_ix = (
@@ -250,14 +332,17 @@ class KPTransferTester(test_utils.Tester):
             visuals['a_overlay_uvmap'] = visutil.tensor2im(
                 [visuals['a_overlay_uvmap'].data]
             )
-            print(visuals['a_overlay_uvmap'].shape)
 
-            uv_fn = os.path.join(opts.result_dir, "{}_uv.png".format(self.iter_count))
-            imageio.imwrite(uv_fn, visuals['a_overlay_uvmap'])
-            
             self.iter_count += 1
 
+        batch_visuals = []
+        batch_visuals.append(visuals)
         return batch_visuals
+
+    def get_current_visuals(self):
+        visuals = self.visuals_to_save()[0]
+        visuals.pop('ind')
+        return visuals
 
     def test(self, ):
         opts = self.opts
@@ -276,14 +361,22 @@ class KPTransferTester(test_utils.Tester):
         bench_stats = {}
         self.iter_index = None
         if not osp.exists(result_path) or opts.force_run:
-            for i, batch in enumerate(self.dataloader):
+            for i, batch in enumerate(tqdm(self.dataloader)):
                 self.iter_index = i
 
-                if i % 100 == 0:
-                    print('{}/{} evaluation iterations.'.format(i, n_iter))
+                # if i % 100 == 0:
+                #     print('{}/{} evaluation iterations.'.format(i, n_iter))
                 self.set_input(batch)
                 self.predict()
-                self.visuals_to_save(count=1)
+                #self.visuals_to_save(count=1)
+#                visualizer.display_current_results(
+#                    self.get_current_visuals(), i
+#                )
+                #visualizer.plot_current_points(self.get_current_points())
+                visualizer.save_current_results(
+                    0, self.visuals_to_save()
+                )
+
 
 def main(_):
     # opts.n_data_workers = 0 opts.batch_size = 1 print = pprint.pprint
@@ -304,7 +397,7 @@ def main(_):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
-    tester = KPTransferTester(opts)
+    tester = UVMapTester(opts)
     tester.init_testing()
     tester.test()
 

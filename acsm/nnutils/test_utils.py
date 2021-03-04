@@ -20,7 +20,7 @@ from ..utils.visualizer import Visualizer
 #----------------------------------#
 # Flags for training
 curr_path = osp.dirname(osp.abspath(__file__))
-cache_path = osp.join(curr_path, '..', 'cachedir')
+cache_path = os.path.normpath(osp.join(curr_path, '..', 'cachedir'))
 
 flags.DEFINE_string('name', 'exp_name', 'Experiment Name')
 flags.DEFINE_string('cachedir', cache_path, 'Cachedir')

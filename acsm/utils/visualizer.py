@@ -1,4 +1,9 @@
 '''Code adapted from https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix'''
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import numpy as np
 import os
 import ntpath
@@ -45,7 +50,8 @@ class Visualizer():
         else:
             self.env_name = opt.env_name
         html_name = self.env_name + "_webpage"
-        self.result_dir = osp.join(opt.result_dir, opt.split, opt.env_name)
+        self.result_dir = opt.result_dir
+        print("Visdom result_dir:", self.result_dir)
         if self.display_id > 0:
             print('Visdom Env Name {}'.format(self.env_name))
             self.vis = visdom.Visdom(
@@ -56,11 +62,13 @@ class Visualizer():
             self.display_single_pane_ncols = opt.display_single_pane_ncols
 
         if self.use_html:
-            self.web_dir = os.path.join(opt.cache_dir, 'web')
-            self.img_dir = os.path.join(self.web_dir, 'images')
-            print('create web directory %s...' % self.web_dir)
-            # util.mkdirs([self.web_dir, self.img_dir])
+            # self.web_dir = os.path.join(opt.cache_dir, 'web')
+            self.web_dir = self.result_dir
+            print('web directory %s...' % self.web_dir)
             util.mkdirs([self.web_dir])
+            # self.img_dir = os.path.join(self.web_dir, 'images')
+            # print('create web directory %s...' % self.web_dir)
+            # util.mkdirs([self.web_dir, self.img_dir])
             self.html_doc = HTML(self.web_dir, '{}.html'.format(html_name))
 
         self.log_name = os.path.join(
